@@ -4,6 +4,7 @@ package protonmail
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -30,6 +31,7 @@ func (r *resp) Err() error {
 		return &APIError{
 			Code:    r.Code,
 			Message: err.Message,
+			Details: err.Details,
 		}
 	}
 	return nil
@@ -40,16 +42,80 @@ type maybeError interface {
 }
 
 type RawAPIError struct {
-	Message string `json:"Error"`
+	Message string          `json:"Error"`
+	Details json.RawMessage `json:"Details"`
 }
 
 type APIError struct {
 	Code    int
 	Message string
+	Details json.RawMessage
 }
 
 func (err *APIError) Error() string {
 	return fmt.Sprintf("[%v] %v", err.Code, err.Message)
+}
+
+// API error codes.
+const (
+	CodeHumanVerificationRequired = 9001
+	CodeHumanVerificationInvalid  = 9002
+)
+
+// Human verification methods.
+const (
+	HumanVerificationCaptcha = "captcha"
+)
+
+// HumanVerificationDetails describes a human verification challenge the API
+// wants the user to complete before it accepts the request.
+type HumanVerificationDetails struct {
+	Methods []string `json:"HumanVerificationMethods"`
+	Token   string   `json:"HumanVerificationToken"`
+}
+
+// HasMethod returns true if the API offers the provided verification method.
+func (details *HumanVerificationDetails) HasMethod(method string) bool {
+	for _, m := range details.Methods {
+		if m == method {
+			return true
+		}
+	}
+	return false
+}
+
+// HumanVerificationDetails returns the human verification challenge attached to
+// this error, if any.
+func (err *APIError) HumanVerificationDetails() *HumanVerificationDetails {
+	if err.Code != CodeHumanVerificationRequired || len(err.Details) == 0 {
+		return nil
+	}
+	details := new(HumanVerificationDetails)
+	if err := json.Unmarshal(err.Details, details); err != nil {
+		return nil
+	}
+	if details.Token == "" {
+		return nil
+	}
+	return details
+}
+
+// HumanVerificationDetailsFromError returns the human verification challenge
+// attached to err, if err is an API error requesting human verification.
+func HumanVerificationDetailsFromError(err error) *HumanVerificationDetails {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return nil
+	}
+	return apiErr.HumanVerificationDetails()
+}
+
+// HumanVerification is a completed human verification challenge. Note that its
+// token is the one produced by completing the challenge, not the challenge
+// token from HumanVerificationDetails.
+type HumanVerification struct {
+	Token string
+	Type  string
 }
 
 type Timestamp int64
@@ -63,6 +129,10 @@ type Client struct {
 	RootURL    string
 	AppVersion string
 	Debug      bool
+
+	// HumanVerification, if non-nil, is sent along with each request to prove
+	// that a human verification challenge has been completed.
+	HumanVerification *HumanVerification
 
 	HTTPClient *http.Client
 	ReAuth     func() error
@@ -91,6 +161,10 @@ func (c *Client) newRequest(method, path string, body io.Reader) (*http.Request,
 
 	req.Header.Set("X-Pm-Appversion", c.AppVersion)
 	req.Header.Set(headerAPIVersion, strconv.Itoa(Version))
+	if hv := c.HumanVerification; hv != nil {
+		req.Header.Set("X-Pm-Human-Verification-Token", hv.Token)
+		req.Header.Set("X-Pm-Human-Verification-Token-Type", hv.Type)
+	}
 	c.setRequestAuthorization(req)
 	return req, nil
 }
