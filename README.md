@@ -50,6 +50,11 @@ retrieve e-mails from ProtonMail. You can do so with this command:
 hydroxide auth <username>
 ```
 
+ProtonMail may ask you to complete a human verification challenge (CAPTCHA). In
+that case hydroxide serves the challenge on a local HTTP server and prints its
+`http://127.0.0.1:<port>` address: open it in a web browser and complete the
+CAPTCHA, and hydroxide will resume logging in on its own.
+
 Once you're logged in, a "bridge password" will be printed. Don't close your
 terminal yet, as this password is not stored anywhere by hydroxide and will be
 needed when configuring your e-mail client.

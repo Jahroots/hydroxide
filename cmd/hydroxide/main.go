@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/http/cookiejar"
 	"os"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
@@ -41,10 +43,17 @@ var (
 )
 
 func newClient() *protonmail.Client {
+	// ProtonMail ties human verification to a session cookie
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	return &protonmail.Client{
 		RootURL:    apiEndpoint,
 		AppVersion: appVersion,
 		Debug:      debug,
+		HTTPClient: &http.Client{Jar: jar},
 	}
 }
 
@@ -65,6 +74,14 @@ func askPass(prompt string) ([]byte, error) {
 		fmt.Fprintf(os.Stderr, "\n")
 	}
 	return b, err
+}
+
+func login(c *protonmail.Client, username, password string) (*protonmail.Auth, error) {
+	authInfo, err := c.AuthInfo(username)
+	if err != nil {
+		return nil, err
+	}
+	return c.Auth(username, password, authInfo)
 }
 
 func askBridgePass() (string, error) {
@@ -288,13 +305,20 @@ func main() {
 				loginPassword = string(pass)
 			}
 
-			authInfo, err := c.AuthInfo(username)
-			if err != nil {
-				log.Fatal(err)
+			var err error
+			a, err = login(c, username, loginPassword)
+			if details := protonmail.HumanVerificationDetailsFromError(err); details != nil {
+				if err := askHumanVerification(c, details); err != nil {
+					log.Fatal(err)
+				}
+				// The SRP session has been consumed, start over
+				a, err = login(c, username, loginPassword)
 			}
-
-			a, err = c.Auth(username, loginPassword, authInfo)
 			if err != nil {
+				var apiErr *protonmail.APIError
+				if errors.As(err, &apiErr) && apiErr.Code == protonmail.CodeHumanVerificationInvalid {
+					log.Fatal("human verification wasn't accepted, please try again")
+				}
 				log.Fatal(err)
 			}
 
