@@ -254,21 +254,30 @@ func askHumanVerification(c *protonmail.Client, details *protonmail.HumanVerific
 	fmt.Fprintf(os.Stderr, "Waiting for the CAPTCHA to be completed (paste a verification token and press Enter instead, if needed)...\n")
 
 	// Let the user paste a token themselves, in case the browser can't reach
-	// the local server
+	// the local server. A pending read on stdin can't be cancelled, so it's
+	// signalled through stdinDone and waited for below: otherwise it would
+	// swallow the answer to the next prompt (e.g. the 2FA code).
+	stdinDone := make(chan struct{})
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
-		if !scanner.Scan() {
-			return
-		}
-		if token := strings.TrimSpace(scanner.Text()); token != "" {
+		ok := scanner.Scan()
+		line := strings.TrimSpace(scanner.Text())
+		close(stdinDone)
+		if ok && line != "" {
 			select {
-			case s.tokens <- token:
+			case s.tokens <- line:
 			default:
 			}
 		}
 	}()
 
 	token := <-s.tokens
+	select {
+	case <-stdinDone:
+	default:
+		fmt.Fprintf(os.Stderr, "Verification complete, press Enter to continue...")
+		<-stdinDone
+	}
 	c.HumanVerification = &protonmail.HumanVerification{
 		Token: token,
 		Type:  protonmail.HumanVerificationCaptcha,
